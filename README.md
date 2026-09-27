@@ -15,6 +15,18 @@ long enough to reach the *final target* (e.g. 85 %), and resumes when that windo
 - A master switch turns it off: the car then charges normally (straight to full).
 - If Home Assistant restarts while waiting and the window was missed, it charges at once.
 
+## Before you start
+
+> **Turn off the charger's own smart or scheduled charging** (Easee, Zaptec, Monta, Clever,
+> Wallbox, …) and the car's charge schedule. Otherwise two systems control the same charger
+> and work against each other – e.g. the charger holds off while the blueprint wants to charge.
+
+Why use this instead of the charger's app? An AC charger can't read the car's battery level,
+so its own smart charging works in kWh or hours ("cheapest 4 hours before 07:00"). This
+blueprint uses the **car's SoC sensor** in Home Assistant, so it can charge *to 50 % now and
+to 85 % cheaply*, and it can use the full price incl. grid tariffs from Energi Data Service.
+If "cheapest hours before a deadline" is all you need, the charger's own feature is fine.
+
 ## Install
 
 [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjrgrafisk%2Fha-ev-smart-charging%2Fblob%2Fmain%2Fev_smart_charging.yaml)
@@ -54,6 +66,18 @@ der er lang nok til at nå *slutmålet* (fx 85 %), og lader videre, når periode
   pris-sensor har dem med.
 - Hovedkontakten slår det fra: så lader bilen som normalt, direkte til fuld.
 - Genstarter Home Assistant, mens den venter, og perioden er passeret, lader den med det samme.
+
+### Før du starter
+
+> **Slå ladeboksens egen smarte eller planlagte opladning fra** (Easee, Zaptec, Monta,
+> Clever, Wallbox, …) og bilens ladetidsplan. Ellers styrer to systemer samme lader og
+> modarbejder hinanden – fx holder laderen igen, mens blueprinten vil lade.
+
+Hvorfor ikke bare bruge ladeboksens app? En AC-ladeboks kan ikke aflæse bilens batteri, så
+dens smarte opladning arbejder i kWh eller timer ("billigste 4 timer inden kl. 7"). Denne
+blueprint bruger **bilens batteri-sensor (SoC)** i Home Assistant, så den kan lade *til 50 %
+nu og til 85 % billigt*, og den kan bruge den samlede pris inkl. nettarif fra Energi Data
+Service. Har du kun brug for "billigste timer inden et tidspunkt", er ladeboksens egen funktion fin.
 
 ### Installation
 
