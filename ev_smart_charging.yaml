@@ -62,6 +62,20 @@ blueprint:
           selector:
             entity:
               domain: binary_sensor
+        charger_status_sensor:
+          name: Charger status sensor (optional)
+          description: >
+            Detects that the car was unplugged from the charger's side too, so it still works
+            when the car shares no data (privacy mode, cloud outage).
+          default: []
+          selector:
+            entity:
+              domain: sensor
+        no_car_states:
+          name: Charger states meaning "no car" (comma-separated)
+          default: "idle, sleep, disconnected, available"
+          selector:
+            text: {}
     helpers:
       name: Helpers
       input:
@@ -132,6 +146,8 @@ variables:
   battery_kwh: !input battery_kwh
   charge_power_kw: !input charge_power_kw
   soc: "{{ states(soc_sensor) | float(-1) }}"
+  no_car_states_text: !input no_car_states
+  no_car: "{{ no_car_states_text.split(',') | map('trim') | map('lower') | list }}"
   phase: "{{ states(phase_helper) }}"
 
 triggers:
@@ -148,6 +164,10 @@ triggers:
     to: "off"
     for: "00:02:00"
     id: unplugged
+  - trigger: state
+    entity_id: !input charger_status_sensor
+    for: "00:05:00"
+    id: charger_status
   - trigger: state
     entity_id: !input soc_sensor
     id: soc
@@ -183,7 +203,17 @@ actions:
           - "{{ phase in ['idle', 'done', 'unknown'] }}"
         sequence:
           - delay: 10
-          - if: "{{ soc >= 0 and soc < immediate_target | float }}"
+          - variables:
+              soc: "{{ states(soc_sensor) | float(-1) }}"
+          - if: "{{ soc < 0 }}"
+            then:
+              # Battery level unknown (car shares no data): don't plan on a guess,
+              # just charge normally.
+              - action: input_select.select_option
+                target: {entity_id: !input phase_helper}
+                data: {option: idle}
+              - stop: Battery level unknown, charging normally
+          - if: "{{ soc < immediate_target | float }}"
             then:
               - action: input_select.select_option
                 target: {entity_id: !input phase_helper}
@@ -308,8 +338,15 @@ actions:
 
       - alias: Unplugged -> reset
         conditions:
-          - condition: trigger
-            id: unplugged
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: unplugged
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: charger_status
+                  - "{{ trigger.to_state is not none and trigger.to_state.state | lower in no_car }}"
         sequence:
           - action: input_select.select_option
             target: {entity_id: !input phase_helper}

@@ -52,6 +52,30 @@ If "cheapest hours before a deadline" is all you need, the charger's own feature
 **Accuracy:** the car's SoC updates every few minutes in most car integrations, so it may
 overshoot the targets by a few percent.
 
+**Car privacy mode:** the car must share its *data* (battery level, plug) with the maker's
+cloud. Sharing *location* is not needed – on e.g. Renault you can keep location private.
+If the battery level is unknown when you plug in, the blueprint doesn't plan on a guess:
+the car just charges normally. Some car integrations (e.g. Renault) stop polling for good if
+the first request after a restart is denied; an automation that reloads the integration
+when the battery sensor has been unavailable for 30 minutes fixes that:
+
+```yaml
+- alias: Reload car integration when battery is unavailable
+  triggers:
+    - trigger: state
+      entity_id: sensor.my_car_battery
+      to: unavailable
+      for: "00:30:00"
+  actions:
+    - action: homeassistant.reload_config_entry
+      target:
+        entity_id: sensor.my_car_battery
+```
+
+**Charger status (optional):** pick the charger's status sensor and the states that mean
+"no car" (e.g. `idle, sleep`). The blueprint then also notices an unplugged car from the
+charger's side – useful when the car shares no data.
+
 ---
 
 ## 🇩🇰 Dansk
@@ -66,6 +90,9 @@ der er lang nok til at nå *slutmålet* (fx 85 %), og lader videre, når periode
   pris-sensor har dem med.
 - Hovedkontakten slår det fra: så lader bilen som normalt, direkte til fuld.
 - Genstarter Home Assistant, mens den venter, og perioden er passeret, lader den med det samme.
+- Bilen skal dele sine *data* (batteri, stik) – ikke sin *position*. Er batteri-% ukendt, når
+  bilen sættes til, lader den bare som normalt. Vælg gerne laderens status-sensor, så den også
+  opdager, at bilen er taget ud, når bilen ikke deler data.
 
 ### Før du starter
 
