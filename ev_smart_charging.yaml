@@ -1,0 +1,331 @@
+blueprint:
+  name: EV smart charging – charge now to X %, then cheapest window to Y %
+  description: >
+    When the car is plugged in it charges straight away up to an **immediate target**
+    (e.g. 50 %). It then pauses and finds the **cheapest contiguous window** within the
+    next N hours that is long enough to reach the **final target** (e.g. 85 %), and
+    resumes charging when that window starts. The charger doesn't need to know anything
+    about electricity prices: pick its **on/off switch**, or leave that empty and define
+    your own **start** and **stop** actions (press a button, call an Easee/Zaptec/Monta
+    service, or start/stop charging on the car). Any car that reports its battery level
+    (SoC) in Home Assistant works.
+
+
+    Prices come from a sensor with hourly or 15-minute prices in `raw_today` /
+    `raw_tomorrow` attributes (Energi Data Service, or the HACS Nordpool integration).
+
+
+    **Create these helpers first** (Settings → Devices & services → Helpers):
+
+    - *Toggle* – master switch (off = charge normally, straight to full)
+
+    - *Dropdown* – charging phase (any single option; the blueprint sets the options)
+
+    - *Date and/or time* – planned start of the cheap window (date **and** time)
+  domain: automation
+  source_url: https://github.com/jrgrafisk/ha-ev-smart-charging/blob/main/ev_smart_charging.yaml
+  input:
+    car:
+      name: Car and charger
+      input:
+        soc_sensor:
+          name: Battery level (SoC) sensor
+          selector:
+            entity:
+              domain: sensor
+        plug_sensor:
+          name: Car plugged in (binary sensor)
+          selector:
+            entity:
+              domain: binary_sensor
+        charger_switch:
+          name: Charger on/off switch (or leave empty and use the actions below)
+          default: []
+          selector:
+            entity:
+              domain: [switch, input_boolean]
+        start_actions:
+          name: Start charging actions (only used without a switch)
+          description: E.g. press a "resume" button or call your charger's start service.
+          default: []
+          selector:
+            action: {}
+        stop_actions:
+          name: Stop/pause charging actions (only used without a switch)
+          default: []
+          selector:
+            action: {}
+        charging_sensor:
+          name: Charger is charging (optional)
+          description: Used to keep the charger paused while waiting for the cheap window.
+          default: []
+          selector:
+            entity:
+              domain: binary_sensor
+    helpers:
+      name: Helpers
+      input:
+        enabled_helper:
+          name: Master switch (toggle helper)
+          selector:
+            entity:
+              domain: input_boolean
+        phase_helper:
+          name: Charging phase (dropdown helper)
+          selector:
+            entity:
+              domain: input_select
+        start_helper:
+          name: Cheap window start (date and time helper)
+          selector:
+            entity:
+              domain: input_datetime
+    settings:
+      name: Settings
+      input:
+        price_sensor:
+          name: Electricity price sensor
+          description: Needs raw_today / raw_tomorrow attributes (Energi Data Service or HACS Nordpool).
+          selector:
+            entity:
+              domain: sensor
+        immediate_target:
+          name: Charge immediately to (%)
+          default: 50
+          selector:
+            number: {min: 0, max: 100, step: 5, unit_of_measurement: "%"}
+        final_target:
+          name: Then charge cheaply to (%)
+          default: 85
+          selector:
+            number: {min: 10, max: 100, step: 5, unit_of_measurement: "%"}
+        window_hours:
+          name: Look for the cheapest window within (hours)
+          default: 12
+          selector:
+            number: {min: 2, max: 36, step: 1, unit_of_measurement: h}
+        battery_kwh:
+          name: Usable battery capacity (kWh)
+          default: 52
+          selector:
+            number: {min: 10, max: 150, step: 1, unit_of_measurement: kWh}
+        charge_power_kw:
+          name: Effective charging power (kW into the battery)
+          default: 10
+          selector:
+            number: {min: 1, max: 22, step: 0.5, unit_of_measurement: kW}
+
+mode: queued
+max: 10
+
+variables:
+  soc_sensor: !input soc_sensor
+  charger_switch: !input charger_switch
+  use_switch: "{{ charger_switch not in [none, '', []] }}"
+  enabled_helper: !input enabled_helper
+  phase_helper: !input phase_helper
+  start_helper: !input start_helper
+  price_sensor: !input price_sensor
+  immediate_target: !input immediate_target
+  final_target: !input final_target
+  window_hours: !input window_hours
+  battery_kwh: !input battery_kwh
+  charge_power_kw: !input charge_power_kw
+  soc: "{{ states(soc_sensor) | float(-1) }}"
+  phase: "{{ states(phase_helper) }}"
+
+triggers:
+  - trigger: homeassistant
+    event: start
+    id: start
+  - trigger: state
+    entity_id: !input plug_sensor
+    from: "off"
+    to: "on"
+    id: plugged
+  - trigger: state
+    entity_id: !input plug_sensor
+    to: "off"
+    for: "00:02:00"
+    id: unplugged
+  - trigger: state
+    entity_id: !input soc_sensor
+    id: soc
+  - trigger: time
+    at: !input start_helper
+    id: window_start
+  - trigger: state
+    entity_id: !input enabled_helper
+    to: "off"
+    id: disabled
+  - trigger: state
+    entity_id: !input charging_sensor
+    to: "on"
+    id: charging
+
+actions:
+  # Keep the dropdown's options right, whatever the user created it with.
+  - if: "{{ state_attr(phase_helper, 'options') != ['idle', 'immediate', 'waiting', 'cheap', 'done'] }}"
+    then:
+      - action: input_select.set_options
+        target:
+          entity_id: !input phase_helper
+        data:
+          options: [idle, immediate, waiting, cheap, done]
+  - choose:
+      - alias: Plugged in -> charge now, or go straight to planning
+        conditions:
+          - condition: trigger
+            id: plugged
+          - condition: state
+            entity_id: !input enabled_helper
+            state: "on"
+          - "{{ phase in ['idle', 'done', 'unknown'] }}"
+        sequence:
+          - delay: 10
+          - if: "{{ soc >= 0 and soc < immediate_target | float }}"
+            then:
+              - action: input_select.select_option
+                target: {entity_id: !input phase_helper}
+                data: {option: immediate}
+              - if: "{{ use_switch }}"
+                then:
+                  - action: homeassistant.turn_on
+                    target: {entity_id: !input charger_switch}
+                else: !input start_actions
+            else:
+              - &pause_and_plan
+                alias: Pause and plan the cheapest window
+                sequence:
+                  - if: "{{ use_switch }}"
+                    then:
+                      - action: homeassistant.turn_off
+                        target: {entity_id: !input charger_switch}
+                    else: !input stop_actions
+                  - variables:
+                      start_ts: >
+                        {% set p = price_sensor %}
+                        {% set raw = (state_attr(p, 'raw_today') or []) + (state_attr(p, 'raw_tomorrow') or []) %}
+                        {% set ns = namespace(ts=[], pr=[]) %}
+                        {% for s in raw %}
+                          {% set t = as_timestamp(s.hour if s.hour is defined else s.start) %}
+                          {% set ns.ts = ns.ts + [t] %}
+                          {% set ns.pr = ns.pr + [(s.price if s.price is defined else s.value) | float(0)] %}
+                        {% endfor %}
+                        {% set slot = (ns.ts[1] - ns.ts[0]) if ns.ts | count > 1 else 3600 %}
+                        {% set now_ts = as_timestamp(now()) %}
+                        {% set horizon = now_ts + window_hours | float * 3600 %}
+                        {% set hours = [((final_target | float - [states(soc_sensor) | float(0), 0] | max) / 100 * battery_kwh | float) / charge_power_kw | float, 0] | max %}
+                        {% set n = [(hours * 3600 / slot) | round(0, 'ceil') | int, 1] | max %}
+                        {% set sel = namespace(ts=[], pr=[]) %}
+                        {% for i in range(ns.ts | count) %}
+                          {% if ns.ts[i] + slot > now_ts and ns.ts[i] + slot <= horizon %}
+                            {% set sel.ts = sel.ts + [[ns.ts[i], now_ts] | max] %}
+                            {% set sel.pr = sel.pr + [ns.pr[i]] %}
+                          {% endif %}
+                        {% endfor %}
+                        {% if sel.ts | count == 0 or n >= sel.ts | count %}{{ now_ts + 60 }}
+                        {% else %}
+                          {% set best = namespace(i=0, cost=none) %}
+                          {% for i in range(sel.ts | count - n + 1) %}
+                            {% set c = sel.pr[i:i + n] | sum %}
+                            {% if best.cost is none or c < best.cost %}{% set best.i = i %}{% set best.cost = c %}{% endif %}
+                          {% endfor %}
+                          {{ [sel.ts[best.i], now_ts + 60] | max }}
+                        {% endif %}
+                  - action: input_datetime.set_datetime
+                    target: {entity_id: !input start_helper}
+                    data:
+                      timestamp: "{{ start_ts | float }}"
+                  - action: input_select.select_option
+                    target: {entity_id: !input phase_helper}
+                    data: {option: waiting}
+
+      - alias: Immediate target reached -> pause and plan
+        conditions:
+          - condition: trigger
+            id: soc
+          - "{{ phase == 'immediate' and soc >= immediate_target | float }}"
+        sequence:
+          - *pause_and_plan
+
+      - alias: Cheap window starts -> charge
+        conditions:
+          - condition: trigger
+            id: window_start
+          - "{{ phase == 'waiting' }}"
+        sequence:
+          - action: input_select.select_option
+            target: {entity_id: !input phase_helper}
+            data: {option: cheap}
+          - if: "{{ use_switch }}"
+            then:
+              - action: homeassistant.turn_on
+                target: {entity_id: !input charger_switch}
+            else: !input start_actions
+
+      - alias: Final target reached -> stop
+        conditions:
+          - condition: trigger
+            id: soc
+          - "{{ phase == 'cheap' and soc >= final_target | float }}"
+        sequence:
+          - if: "{{ use_switch }}"
+            then:
+              - action: homeassistant.turn_off
+                target: {entity_id: !input charger_switch}
+            else: !input stop_actions
+          - action: input_select.select_option
+            target: {entity_id: !input phase_helper}
+            data: {option: done}
+
+      - alias: Charger restarted on its own while waiting -> pause again
+        conditions:
+          - condition: trigger
+            id: charging
+          - "{{ phase == 'waiting' }}"
+        sequence:
+          - if: "{{ use_switch }}"
+            then:
+              - action: homeassistant.turn_off
+                target: {entity_id: !input charger_switch}
+            else: !input stop_actions
+
+      - alias: Master switch off while waiting -> charge normally
+        conditions:
+          - condition: trigger
+            id: disabled
+          - "{{ phase == 'waiting' }}"
+        sequence:
+          - action: input_select.select_option
+            target: {entity_id: !input phase_helper}
+            data: {option: idle}
+          - if: "{{ use_switch }}"
+            then:
+              - action: homeassistant.turn_on
+                target: {entity_id: !input charger_switch}
+            else: !input start_actions
+
+      - alias: Unplugged -> reset
+        conditions:
+          - condition: trigger
+            id: unplugged
+        sequence:
+          - action: input_select.select_option
+            target: {entity_id: !input phase_helper}
+            data: {option: idle}
+
+      - alias: HA restarted while waiting and the window was missed -> charge now
+        conditions:
+          - condition: trigger
+            id: start
+          - "{{ phase == 'waiting' and as_timestamp(states(start_helper), 0) < as_timestamp(now()) }}"
+        sequence:
+          - action: input_select.select_option
+            target: {entity_id: !input phase_helper}
+            data: {option: cheap}
+          - if: "{{ use_switch }}"
+            then:
+              - action: homeassistant.turn_on
+                target: {entity_id: !input charger_switch}
+            else: !input start_actions
